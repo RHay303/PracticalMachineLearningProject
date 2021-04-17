@@ -1,0 +1,163 @@
+---
+title: "Practical Machine Learning"
+author: "Rhay"
+date: "4/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(corrplot)
+```
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement -- a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset).
+
+Data The training data for this project are available here:
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here:
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+The data for this project come from this source: <http://groupware.les.inf.puc-rio.br/har>.
+
+## Data Processing
+
+```{r dataprocessing}
+#Download the data and read into dataframes
+trainUrl <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainFile <- "./data/pml-training.csv"
+testFile  <- "./data/pml-testing.csv"
+if (!file.exists("./data")) {
+  dir.create("./data")
+}
+if (!file.exists(trainFile)) {
+  download.file(trainUrl, destfile=trainFile, method="curl")
+}
+if (!file.exists(testFile)) {
+  download.file(testUrl, destfile=testFile, method="curl")
+}
+trainRaw <- read.csv("./data/pml-training.csv")
+testRaw <- read.csv("./data/pml-testing.csv")
+dim(trainRaw)
+dim(testRaw)
+```
+
+The datasets contain 160 variable and 19622 observations in the training set and 20 in the test set. Convert columns to numeric data type and remove columns with large number NA's to work better with model.
+
+```{r cleandata}
+#convert to numeric datatype
+#trainRaw[, 7:159] <- lapply(trainRaw[,7:159], as.numeric)
+#testRaw[, 7:159] <- lapply(testRaw[,7:159], as.numeric)
+#remove columns with NAs
+sum(complete.cases(trainRaw))
+trainRaw <- trainRaw[, colSums(is.na(trainRaw)) == 0] 
+testRaw <- testRaw[, colSums(is.na(testRaw)) == 0] 
+#remove columns with headers containing 'timestamp, window' as these aren't useful in model; convert remaining columns
+#to numeric datatype
+classe <- trainRaw$classe
+trainRemove <- grepl("^X|timestamp|window", names(trainRaw))
+trainRaw <- trainRaw[, !trainRemove]
+trainCleaned <- trainRaw[, sapply(trainRaw, is.numeric)]
+trainCleaned$classe <- classe
+testRemove <- grepl("^X|timestamp|window", names(testRaw))
+testRaw <- testRaw[, !testRemove]
+testCleaned <- testRaw[, sapply(testRaw, is.numeric)]
+```
+
+The clean data sets contain 53 variables with 19622 observations for training and 20 for testing. Divide the data into a 70/30 split to create training and test sets
+
+```{r dataslice}
+set.seed(1234)
+inTrain <- createDataPartition(trainCleaned$classe, p=0.70, list=F)
+crossValidation <- trainCleaned[inTrain, ] 
+crossValidationTest <- trainCleaned[-inTrain, ]
+```
+
+## Random Forest Model
+
+Use Random Forest model to help determine which variables are most important. I choose this model as it is flexible, easy to use and known to give good results most of the time. I use a 5-fold cross validation for the algorithm.
+
+```{r randomforest}
+controlRf <- trainControl(method="cv", 5)
+modelRf <- train(classe ~ ., data=crossValidation, method="rf",trControl=controlRf, ntree=250)
+modelRf
+
+```
+
+Test accuracy of random forest model on cross validation test data set
+
+```{r predictrfmodel}
+pred1 <- predict(modelRf, crossValidationTest)
+#confusionMatrix(testData$classe, predictRf)
+ClasseFactor<- as.factor(crossValidationTest$classe)
+confusionMatrix(pred1, ClasseFactor)
+accuracy <- sum(pred1 == ClasseFactor) / length(pred1)
+cat('\n','The accuracy is',accuracy,'\n')
+outofsampleerror <- 1 - as.numeric(confusionMatrix(ClasseFactor, pred1)$overall[1])
+cat('The out of sample error is',outofsampleerror,'\n') 
+```
+
+The model accuracy proved to be good at 99.39% with an out of sample error of 0.61%. Based on this result, the random forest model appears to be good enough to make the necessary prediction.
+
+## Plots from Model
+
+The Correlations matrix is below but it's hard to interpret due to the number of variables. In general, a darker color indicates more correlation between the two variables.
+
+```{r,  cache = T}
+
+corrPlot <- cor(crossValidation[, -length(names(crossValidation))])
+corrplot(corrPlot, method = "color", type="lower")
+
+```
+
+From the chart below it's easier to see the top 10 variables the model determined to be of most importance. For example, we see that the roll_best is the most important variable.
+
+```{r rankvariables}
+varImpObj <- varImp(modelRf)
+plot(varImpObj, main = "Importance of Top 10 Variables", top = 10)
+```
+
+Another way to view which variables the model found to be most important is with a decision tree shown below.
+
+```{r decisiontree}
+tree2 <- rpart(classe ~ ., data=crossValidation, method="class", cp=.02)
+rpart.plot(tree2, box.palette = "RdBu", shadow.col = "gray", nn=TRUE)
+```
+
+## Test Model
+
+To test the model, we predict test data using the random forest model we've developed.
+
+```{r predictdata2}
+result <- predict(modelRf, testCleaned[, -length(names(testCleaned))])
+result
+```
+
+## Prepare model for submission to Coursera course
+
+```{r testmodel}
+pml_write_files = function(x){
+n = length(x)
+for(i in 1:n){
+filename = paste0("problem_id_",i,".txt")
+write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+}
+}
+x <- testRaw
+
+answers <- predict(modelRf, newdata=x)
+answers
+```
+
+```{r outputfile}
+pml_write_files(answers)
+```
